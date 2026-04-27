@@ -27,7 +27,7 @@ export const rootRoute = createRootRouteWithContext<MyRouterContext>()({
         content: 'width=device-width, initial-scale=1',
       },
       {
-        title: 'ArNS Registry',
+        title: 'ArNS Registration Status',
       },
     ],
     links: [

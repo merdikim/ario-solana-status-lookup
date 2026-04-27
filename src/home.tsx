@@ -5,11 +5,12 @@ import {
   RefreshCw,
   Search,
   TriangleAlert,
+  X,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { Owner } from './types'
-import { fetchAddressStatus } from './lib/arns'
+import { fetchAddressStatuses } from './lib/arns'
 import { cn } from './lib/utils'
 
 export function Home() {
@@ -20,15 +21,58 @@ export function Home() {
     isError,
     error,
     data: nameOwners,
-    refetch,
+    refetch: refetchOwners,
   } = useQuery<Array<Owner>>({
     queryKey: ['arns-owners-status'],
     queryFn: async () => {
       const result = await fetch('/nameowners.json')
-      const { owners } = await result.json()
+      const owners = await result.json()
       return owners
     },
   })
+  const ownerAddresses = useMemo(
+    () => nameOwners?.map((owner) => owner.address) ?? [],
+    [nameOwners],
+  )
+  const {
+    isFetching: isStatusFetching,
+    isLoading: isStatusLoading,
+    isError: isStatusError,
+    error: statusError,
+    data: ownerStatuses,
+    refetch: refetchStatuses,
+  } = useQuery<Record<string, boolean>>({
+    queryKey: ['arns-owner-statuses', ownerAddresses],
+    queryFn: () => fetchAddressStatuses(ownerAddresses),
+    enabled: ownerAddresses.length > 0,
+    staleTime: 5 * 60 * 1000,
+  })
+  const registeredAddressCount = useMemo(() => {
+    if (!ownerStatuses) {
+      return 0
+    }
+
+    return ownerAddresses.filter((address) => ownerStatuses[address]).length
+  }, [ownerAddresses, ownerStatuses])
+  const registrationCompletion =
+    ownerAddresses.length > 0
+      ? Math.round((registeredAddressCount / ownerAddresses.length) * 100)
+      : 0
+  const normalizedQuery = query.trim().toLowerCase()
+  const filteredNameOwners = useMemo(() => {
+    if (!nameOwners || normalizedQuery.length === 0) {
+      return nameOwners
+    }
+
+    return nameOwners.filter((owner) => {
+      const addressMatches = owner.address.toLowerCase().includes(normalizedQuery)
+      const nameMatches = owner.names.some((name) =>
+        name.toLowerCase().includes(normalizedQuery),
+      )
+
+      return addressMatches || nameMatches
+    })
+  }, [nameOwners, normalizedQuery])
 
   return (
     <div className="min-h-screen px-4 py-8 sm:px-6 lg:px-8">
@@ -41,8 +85,13 @@ export function Home() {
           </div>
           <button
             className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-(--sea-ink) px-4 text-sm font-bold text-white shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={isLoading || isFetching}
-            onClick={() => refetch()}
+            disabled={
+              isLoading || isFetching || isStatusLoading || isStatusFetching
+            }
+            onClick={() => {
+              void refetchOwners()
+              void refetchStatuses()
+            }}
             type="button"
           >
             <RefreshCw className="size-4" />
@@ -52,13 +101,40 @@ export function Home() {
 
         <section className="island-shell overflow-hidden rounded-lg">
           <div className="flex flex-col gap-4 border-b border-(--line) p-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-wrap items-center gap-3 text-sm text-(--sea-ink-soft)">
-              {isError ? (
-                <span className="inline-flex items-center gap-2 font-semibold text-red-700">
-                  <AlertCircle className="size-4" />
-                  {error.message}
-                </span>
-              ) : null}
+            {isError ? (
+              <span className="inline-flex items-center gap-2 font-semibold text-red-700">
+                <AlertCircle className="size-4" />
+                {error.message}
+              </span>
+            ) : null}
+            {isStatusError ? (
+              <span className="inline-flex items-center gap-2 font-semibold text-red-700">
+                <AlertCircle className="size-4" />
+                {statusError.message}
+              </span>
+            ) : null}
+
+            <div className="flex min-w-0 flex-1 flex-col gap-3 text-sm text-(--sea-ink-soft) lg:flex-row lg:items-center">
+              <div className="flex w-full min-w-48 max-w-96 flex-col gap-1">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium">
+                    Registered:{' '}
+                    <span className="font-bold text-(--sea-ink)">
+                      {formatNumber(registeredAddressCount)}
+                    </span>{' '}
+                    of {formatNumber(ownerAddresses.length)}
+                  </span>
+                  <span className="font-bold text-(--sea-ink)">
+                    {registrationCompletion}%
+                  </span>
+                </div>
+                <progress
+                  aria-label="Registration completion"
+                  className="h-2 w-full overflow-hidden rounded-full [&::-moz-progress-bar]:bg-(--lagoon-deep) [&::-webkit-progress-bar]:bg-(--line) [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-value]:bg-(--lagoon-deep) [&::-webkit-progress-value]:rounded-full"
+                  max={100}
+                  value={registrationCompletion}
+                />
+              </div>
             </div>
 
             <label className="relative block w-full lg:w-80">
@@ -75,29 +151,37 @@ export function Home() {
           </div>
 
           <div className="max-h-[68vh] overflow-auto">
-            <table className="w-full min-w-160 border-collapse text-left text-sm">
-              <thead className="sticky top-0 z-10 bg-(--surface-strong) text-xs font-bold tracking-[0.08em] text-(--sea-ink-soft) uppercase backdrop-blur">
+            <table className="w-full min-w-160 border-collapse text-left text-xs md:text-sm xl:text-base">
+              <thead className="sticky text-sm top-0 z-10 bg-(--surface-strong) font-bold tracking-[0.08em] text-(--sea-ink-soft) uppercase backdrop-blur">
                 <tr>
                   <Th label="Owner" />
-                  <Th label="Domains Owned" />
+                  <Th label="Domains" />
                   <Th label="Status" textEnd />
                 </tr>
               </thead>
               <tbody>
                 {isLoading && <OwnerTableSkeleton />}
-                {nameOwners?.length === 0 ? (
+                {filteredNameOwners?.length === 0 ? (
                   <tr>
                     <td
-                      className="px-4 py-12 text-center w-full text-(--sea-ink-soft)"
-                      colSpan={2}
+                      className="w-full px-4 py-12 text-center text-(--sea-ink-soft)"
+                      colSpan={3}
                     >
-                      No owners found.
+                      {normalizedQuery.length > 0
+                        ? 'No owners match your search.'
+                        : 'No owners found.'}
                     </td>
                   </tr>
                 ) : (
                   <>
-                    {nameOwners?.map((owner) => (
-                      <Tr owner={owner} />
+                    {filteredNameOwners?.map((owner) => (
+                      <Tr
+                        isStatusError={isStatusError}
+                        isStatusLoading={isStatusLoading}
+                        key={owner.address}
+                        owner={owner}
+                        status={ownerStatuses?.[owner.address]}
+                      />
                     ))}
                   </>
                 )}
@@ -114,36 +198,35 @@ function Th({ label, textEnd = false }: { label: string; textEnd?: boolean }) {
   return <th className={cn(textEnd && 'text-end', 'px-4 py-3')}>{label}</th>
 }
 
-function Tr({ owner }: { owner: Owner }) {
-  const {
-    isLoading,
-    isError,
-    data: status,
-  } = useQuery<boolean>({
-    queryKey: ['arns-owner-status', owner.address],
-    queryFn: async () => {
-      const result = await fetchAddressStatus(owner.address)
-      return result.registrationStatus
-    },
-  })
-
+function Tr({
+  isStatusError,
+  isStatusLoading,
+  owner,
+  status,
+}: {
+  isStatusError: boolean
+  isStatusLoading: boolean
+  owner: Owner
+  status?: boolean
+}) {
   return (
     <tr
       className="border-t border-(--line) transition hover:bg-white/45"
       key={owner.address}
     >
-      <td className="max-w-160 px-4 py-3 align-top font-mono text-xs break-all text-(--sea-ink-soft)">
+      <td className="max-w-160 px-4 py-3 align-top font-mono break-all text-(--sea-ink-soft)">
         {owner.address}
       </td>
       <td className="px-4 py-3 align-top">
-        <span className="rounded-sm border border-(--chip-line) bg-(--chip-bg) px-2 py-1 text-xs font-bold">
+        <span className="rounded-sm border border-(--chip-line) bg-(--chip-bg) px-2 py-1 font-bold">
           {formatNumber(owner.names.length)}
         </span>
       </td>
       <td className="px-4 py-3 flex items-center justify-end">
-        {isLoading && <LoaderCircle />}
-        {isError && <TriangleAlert color="red" />}
-        {status && <CheckCircle color="green" />}
+        {isStatusLoading && <LoaderCircle className="animate-spin" />}
+        {isStatusError && <TriangleAlert color="red" />}
+        {status === true && <CheckCircle color="green" />}
+        {status === false && <X color="red" />}
       </td>
     </tr>
   )
@@ -152,14 +235,17 @@ function Tr({ owner }: { owner: Owner }) {
 function OwnerTableSkeleton() {
   return Array.from({ length: 8 }, (_, index) => (
     <tr className="border-t border-(--line)" key={index}>
-      <td className="px-4 py-3">
+      <td className="max-w-160 px-4 py-3 align-top">
         <div
           className="h-4 animate-pulse rounded-sm bg-(--line)"
           style={{ width: `${70 + (index % 3) * 8}%` }}
         />
       </td>
-      <td className="px-4 py-3">
-        <div className="h-6 w-14 animate-pulse rounded-sm bg-(--chip-bg)" />
+      <td className="px-4 py-3 align-top">
+        <div className="h-7 w-16 animate-pulse rounded-sm border border-(--chip-line) bg-(--line)" />
+      </td>
+      <td className="flex items-center justify-end px-4 py-3">
+        <div className="size-5 animate-pulse rounded-full bg-(--line)" />
       </td>
     </tr>
   ))

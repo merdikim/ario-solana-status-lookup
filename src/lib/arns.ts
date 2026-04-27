@@ -1,4 +1,4 @@
-import type { Tag } from '#/types'
+import type { AddressTransactionsResult, Tag } from '#/types'
 
 const addressTransactionsQuery = `
   query AddressTransactions($owners: [String!], $first: Int!, $after: String) {
@@ -7,25 +7,87 @@ const addressTransactionsQuery = `
         cursor
         node {
           id
+          owner {
+            address
+          }
           tags {
             name
             value
           }
         }
       }
+      pageInfo {
+        hasNextPage
+      }
     }
   }
 `
 
-export async function fetchAddressStatus(
-  address: string,
-): Promise<{ address: string; registrationStatus: boolean }> {
-  const normalizedAddress = address.trim()
+const OWNER_BATCH_SIZE = 100
+const TRANSACTION_PAGE_SIZE = 100
 
-  if (normalizedAddress.length === 0) {
-    throw new Error('Address is required')
+export async function fetchAddressStatuses(
+  addresses: Array<string>,
+): Promise<Record<string, boolean>> {
+  const normalizedAddresses = Array.from(
+    new Set(addresses.map((address) => address.trim()).filter(Boolean)),
+  )
+
+  if (normalizedAddresses.length === 0) {
+    return {}
   }
 
+  const statuses: Record<string, boolean> = Object.fromEntries(
+    normalizedAddresses.map((address) => [address, false]),
+  )
+
+  for (let index = 0; index < normalizedAddresses.length; index += OWNER_BATCH_SIZE) {
+    const owners = normalizedAddresses.slice(index, index + OWNER_BATCH_SIZE)
+    const batchStatuses = await fetchAddressStatusBatch(owners)
+
+    Object.assign(statuses, batchStatuses)
+  }
+
+  return statuses
+}
+
+async function fetchAddressStatusBatch(
+  owners: Array<string>,
+): Promise<Record<string, boolean>> {
+  const statuses: Record<string, boolean> = Object.fromEntries(
+    owners.map((owner) => [owner, false]),
+  )
+  let after: string | undefined
+
+  do {
+    const result: AddressTransactionsResult = await fetchAddressTransactions(
+      owners,
+      after,
+    )
+    const edges = result.data?.transactions?.edges ?? []
+
+    for (const edge of edges) {
+      const owner = edge.node.owner?.address
+
+      if (!owner || statuses[owner]) {
+        continue
+      }
+
+      statuses[owner] = hasValidSolanaRegistration(edge.node.tags)
+    }
+
+    after = result.data?.transactions?.pageInfo?.hasNextPage
+      ? edges.at(-1)?.cursor
+      : undefined
+  } while (after && owners.some((owner) => !statuses[owner]))
+
+  return statuses
+}
+
+async function fetchAddressTransactions(
+  owners: Array<string>,
+  after?: string,
+): Promise<AddressTransactionsResult> {
   const response = await fetch('https://turbo-gateway.com/graphql', {
     method: 'POST',
     headers: {
@@ -34,8 +96,9 @@ export async function fetchAddressStatus(
     body: JSON.stringify({
       query: addressTransactionsQuery,
       variables: {
-        owners: [normalizedAddress],
-        first: 100,
+        owners,
+        first: TRANSACTION_PAGE_SIZE,
+        after,
       },
     }),
   })
@@ -44,19 +107,19 @@ export async function fetchAddressStatus(
     throw new Error(`Arweave GraphQL request failed with ${response.status}`)
   }
 
-  const result = await response.json()
+  const result: AddressTransactionsResult = await response.json()
 
-  const edges = result.data?.transactions.edges ?? []
-  const solanaPubKey = edges[0].node.tags.find(
-    (tag: Tag) => tag.name == 'Solana-Pubkey',
-  )
-  const solanaSignature = edges[0].node.tags.find(
-    (tag: Tag) => tag.name == 'Solana-Signature',
-  )
-
-  return {
-    address,
-    registrationStatus:
-      solanaPubKey?.value.length > 0 && solanaSignature?.value.length > 0,
+  if (result.errors?.length) {
+    const message = result.errors[0]?.message ?? 'Unknown GraphQL error'
+    throw new Error(`Arweave GraphQL request failed: ${message}`)
   }
+
+  return result
+}
+
+function hasValidSolanaRegistration(tags: Array<Tag>) {
+  const solanaPubKey = tags.find((tag) => tag.name === 'Solana-Pubkey')
+  const solanaSignature = tags.find((tag) => tag.name === 'Solana-Signature')
+
+  return Boolean(solanaPubKey?.value.length && solanaSignature?.value.length)
 }
