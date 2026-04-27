@@ -1,64 +1,95 @@
-import type { AoArNSNameDataWithName, PaginationResult } from '@ar.io/sdk/web'
+import { ARIO } from '@ar.io/sdk/web'
 
-export type ArNSRecord = AoArNSNameDataWithName
+import type {
+  FetchArNSNamesPageOptions,
+  FetchArNSNamesPageResult,
+  Tag,
+} from '../types'
 
-export type FetchArNSProgress = {
-  loaded: number
-  page: number
-  totalItems?: number
-}
-
-export type FetchAllArNSNamesOptions = {
-  limit?: number
-  onProgress?: (progress: FetchArNSProgress) => void
-}
-
-export type FetchAllArNSNamesResult = {
-  records: ArNSRecord[]
-  totalItems?: number
-  pages: number
-}
-
-export async function fetchAllArNSNames({
+export async function fetchArNSNamesPage({
+  cursor,
   limit = 100,
-  onProgress,
-}: FetchAllArNSNamesOptions = {}): Promise<FetchAllArNSNamesResult> {
-  const { ARIO } = await import('@ar.io/sdk/web')
+}: FetchArNSNamesPageOptions = {}): Promise<FetchArNSNamesPageResult> {
   const ario = ARIO.mainnet()
-  const records: ArNSRecord[] = []
-  const seenCursors = new Set<string>()
 
-  let cursor: string | undefined
-  let totalItems: number | undefined
-  let pages = 0
-  let hasMore = true
+  const page = await ario.getArNSRecords({
+    cursor,
+    limit,
+    sortBy: 'name',
+    sortOrder: 'asc',
+  })
 
-  while (hasMore) {
-    const page: PaginationResult<ArNSRecord> = await ario.getArNSRecords({
-      cursor,
-      limit,
-      sortBy: 'name',
-      sortOrder: 'asc',
-    })
+  const items = await Promise.all(
+    page.items.map(async (record) => {
+      const resolution = await ario
+        .resolveArNSName({ name: record.name })
+        .catch(() => undefined)
 
-    pages += 1
-    records.push(...page.items)
-    totalItems = page.totalItems
-    onProgress?.({ loaded: records.length, page: pages, totalItems })
+      return {
+        ...record,
+        owner: resolution?.owner,
+      }
+    }),
+  )
 
-    hasMore = page.hasMore && page.nextCursor != null
+  return {
+    ...page,
+    items,
+  }
+}
 
-    if (!hasMore) {
-      continue
+const addressTransactionsQuery = `
+  query AddressTransactions($owners: [String!], $first: Int!, $after: String) {
+    transactions(owners: $owners,tags: [{name:"App-Name", values:["AR-IO-Solana-Registration"]}] first: $first, after: $after, sort: HEIGHT_DESC) {
+      edges {
+        cursor
+        node {
+          id
+          tags {
+            name
+            value
+          }
+        }
+      }
     }
+  }
+`
 
-    if (seenCursors.has(page.nextCursor)) {
-      throw new Error(`ArNS pagination repeated cursor "${page.nextCursor}"`)
-    }
+export async function fetchAddressStatus(
+  address: string,
+): Promise<{address:string, registrationStatus:boolean}> {
+  const normalizedAddress = address.trim()
 
-    seenCursors.add(page.nextCursor)
-    cursor = page.nextCursor
+  if (normalizedAddress.length === 0) {
+    throw new Error('Address is required')
   }
 
-  return { records, totalItems, pages }
+  const response = await fetch('https://turbo-gateway.com/graphql', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      query: addressTransactionsQuery,
+      variables: {
+        owners: [normalizedAddress],
+        first: 100,
+      },
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Arweave GraphQL request failed with ${response.status}`)
+  }
+
+  const result = await response.json() 
+
+  const edges = result.data?.transactions.edges ?? []
+  const solanaPubKey = edges[0].node.tags.find((tag:Tag) => tag.name == "Solana-Pubkey")
+  const solanaSignature = edges[0].node.tags.find((tag:Tag) => tag.name == "Solana-Signature")
+
+  return {
+    address,
+    registrationStatus: (solanaPubKey?.value.length > 0 && solanaSignature?.value.length > 0)
+  }
 }
