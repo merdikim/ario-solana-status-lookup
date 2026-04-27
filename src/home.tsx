@@ -79,7 +79,7 @@ export function Home() {
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6">
         <header className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
           <div>
-            <h1 className="display-title mt-2 text-4xl font-bold text-(--sea-ink) sm:text-5xl">
+            <h1 className="display-title mt-2 text-xl font-bold text-(--sea-ink) sm:text-2xl">
               ArNS Registration Status
             </h1>
           </div>
@@ -151,8 +151,8 @@ export function Home() {
           </div>
 
           <div className="max-h-[68vh] overflow-auto">
-            <table className="w-full min-w-160 border-collapse text-left text-xs md:text-sm xl:text-base">
-              <thead className="sticky text-sm top-0 z-10 bg-(--surface-strong) font-bold tracking-[0.08em] text-(--sea-ink-soft) uppercase backdrop-blur">
+            <table className="w-full min-w-160 border-collapse text-left text-xs">
+              <thead className="sticky top-0 z-10 bg-(--surface-strong) font-bold tracking-[0.08em] text-(--sea-ink-soft) uppercase backdrop-blur">
                 <tr>
                   <Th label="Owner" />
                   <Th label="Domains" />
