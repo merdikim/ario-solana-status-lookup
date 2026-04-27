@@ -1,7 +1,6 @@
 import type {
   AoArNSNameDataWithName,
   ArNSNameResolutionData,
-  PaginationResult,
 } from '@ar.io/sdk/web'
 
 export type ArNSRecord = AoArNSNameDataWithName & {
@@ -9,14 +8,25 @@ export type ArNSRecord = AoArNSNameDataWithName & {
   owner?: ArNSNameResolutionData['owner']
 }
 
-export type FetchArNSNamesPageOptions = {
-  cursor?: string
-  limit?: number
+export type OwnerDomainSummary = {
+  owner: NonNullable<ArNSRecord['owner']>
+  domainCount: number
+  names: string[]
 }
 
-export type FetchArNSNamesPageResult = PaginationResult<ArNSRecord>
+export type FetchArNSNamesResult = {
+  records: ArNSRecord[]
+  totalItems: number
+}
+
+// export type FetchArNSOwnersResult = {
+//   owners: OwnerDomainSummary[]
+//   records: ArNSRecord[]
+//   totalItems: number
+//   unresolvedCount: number
+// }
 
 export type Tag = {
-  name:string
-  value:string
+  name: string
+  value: string
 }
