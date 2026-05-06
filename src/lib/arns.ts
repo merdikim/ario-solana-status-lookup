@@ -28,6 +28,7 @@ const TRANSACTION_PAGE_SIZE = 100
 
 export async function fetchAddressStatuses(
   addresses: Array<string>,
+  cachedStatuses: Record<string, boolean> = {},
 ): Promise<Record<string, boolean>> {
   const normalizedAddresses = Array.from(
     new Set(addresses.map((address) => address.trim()).filter(Boolean)),
@@ -38,11 +39,21 @@ export async function fetchAddressStatuses(
   }
 
   const statuses: Record<string, boolean> = Object.fromEntries(
-    normalizedAddresses.map((address) => [address, false]),
+    normalizedAddresses.map((address) => [
+      address,
+      cachedStatuses[address] ?? false,
+    ]),
+  )
+  const addressesToFetch = normalizedAddresses.filter(
+    (address) => statuses[address] === false,
   )
 
-  for (let index = 0; index < normalizedAddresses.length; index += OWNER_BATCH_SIZE) {
-    const owners = normalizedAddresses.slice(index, index + OWNER_BATCH_SIZE)
+  for (
+    let index = 0;
+    index < addressesToFetch.length;
+    index += OWNER_BATCH_SIZE
+  ) {
+    const owners = addressesToFetch.slice(index, index + OWNER_BATCH_SIZE)
     const batchStatuses = await fetchAddressStatusBatch(owners)
 
     Object.assign(statuses, batchStatuses)
@@ -88,7 +99,7 @@ async function fetchAddressTransactions(
   owners: Array<string>,
   after?: string,
 ): Promise<AddressTransactionsResult> {
-  const response = await fetch('https://turbo-gateway.com/graphql', {
+  const response = await fetch('https://ardrive.net/graphql', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',

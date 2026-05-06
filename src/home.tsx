@@ -7,11 +7,13 @@ import {
   TriangleAlert,
   X,
 } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import type { Owner } from './types'
 import { fetchAddressStatuses } from './lib/arns'
 import { cn } from './lib/utils'
+
+const STATUS_BATCH_SIZE = 50
 
 export function Home() {
   const [query, setQuery] = useState('')
@@ -34,24 +36,68 @@ export function Home() {
     () => nameOwners?.map((owner) => owner.address) ?? [],
     [nameOwners],
   )
-  const {
-    isFetching: isStatusFetching,
-    isLoading: isStatusLoading,
-    isError: isStatusError,
-    error: statusError,
-    data: ownerStatuses,
-    refetch: refetchStatuses,
-  } = useQuery<Record<string, boolean>>({
-    queryKey: ['arns-owner-statuses', ownerAddresses],
-    queryFn: () => fetchAddressStatuses(ownerAddresses),
-    enabled: ownerAddresses.length > 0,
-    staleTime: 5 * 60 * 1000,
+  const cachedOwnerStatuses = useMemo(
+    () =>
+      Object.fromEntries(
+        nameOwners
+          ?.filter((owner) => typeof owner.status === 'boolean')
+          .map((owner) => [owner.address, owner.status]) ?? [],
+      ) as Record<string, boolean>,
+    [nameOwners],
+  )
+  const addressesToFetch = useMemo(
+    () =>
+      nameOwners
+        ?.filter((owner) => owner.status !== true)
+        .map((owner) => owner.address) ?? [],
+    [nameOwners],
+  )
+  const statusBatches = useMemo(
+    () => chunkAddresses(addressesToFetch, STATUS_BATCH_SIZE),
+    [addressesToFetch],
+  )
+  const statusQueries = useQueries({
+    queries: statusBatches.map((addresses) => ({
+      queryKey: ['arns-owner-statuses', addresses],
+      queryFn: () => fetchAddressStatuses(addresses, cachedOwnerStatuses),
+      enabled: addresses.length > 0,
+      staleTime: 5 * 60 * 1000,
+    })),
   })
+  const addressesBeingFetched = useMemo(
+    () =>
+      new Set(
+        statusQueries.flatMap((statusQuery, index) =>
+          statusQuery.isFetching ? statusBatches[index] : [],
+        ),
+      ),
+    [statusBatches, statusQueries],
+  )
+  const addressesWithStatusErrors = useMemo(
+    () =>
+      new Set(
+        statusQueries.flatMap((statusQuery, index) =>
+          statusQuery.isError ? statusBatches[index] : [],
+        ),
+      ),
+    [statusBatches, statusQueries],
+  )
+  const isStatusFetching = statusQueries.some(
+    (statusQuery) => statusQuery.isFetching,
+  )
+  const statusError = statusQueries.find(
+    (statusQuery) => statusQuery.error,
+  )?.error
+  const ownerStatuses = useMemo(
+    () =>
+      Object.assign(
+        {},
+        cachedOwnerStatuses,
+        ...statusQueries.map((statusQuery) => statusQuery.data ?? {}),
+      ) as Record<string, boolean>,
+    [cachedOwnerStatuses, statusQueries],
+  )
   const registeredAddressCount = useMemo(() => {
-    if (!ownerStatuses) {
-      return 0
-    }
-
     return ownerAddresses.filter((address) => ownerStatuses[address]).length
   }, [ownerAddresses, ownerStatuses])
   const registrationCompletion =
@@ -65,7 +111,9 @@ export function Home() {
     }
 
     return nameOwners.filter((owner) => {
-      const addressMatches = owner.address.toLowerCase().includes(normalizedQuery)
+      const addressMatches = owner.address
+        .toLowerCase()
+        .includes(normalizedQuery)
       const nameMatches = owner.names.some((name) =>
         name.toLowerCase().includes(normalizedQuery),
       )
@@ -85,12 +133,12 @@ export function Home() {
           </div>
           <button
             className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-(--sea-ink) px-4 text-sm font-bold text-white shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={
-              isLoading || isFetching || isStatusLoading || isStatusFetching
-            }
+            disabled={isLoading || isFetching || isStatusFetching}
             onClick={() => {
               void refetchOwners()
-              void refetchStatuses()
+              void Promise.all(
+                statusQueries.map((statusQuery) => statusQuery.refetch()),
+              )
             }}
             type="button"
           >
@@ -107,7 +155,7 @@ export function Home() {
                 {error.message}
               </span>
             ) : null}
-            {isStatusError ? (
+            {statusError ? (
               <span className="inline-flex items-center gap-2 font-semibold text-red-700">
                 <AlertCircle className="size-4" />
                 {statusError.message}
@@ -176,11 +224,17 @@ export function Home() {
                   <>
                     {filteredNameOwners?.map((owner) => (
                       <Tr
-                        isStatusError={isStatusError}
-                        isStatusLoading={isStatusLoading}
+                        isStatusError={addressesWithStatusErrors.has(
+                          owner.address,
+                        )}
+                        isStatusLoading={
+                          isStatusFetching &&
+                          addressesBeingFetched.has(owner.address) &&
+                          ownerStatuses[owner.address] !== true
+                        }
                         key={owner.address}
                         owner={owner}
-                        status={ownerStatuses?.[owner.address]}
+                        status={getOwnerStatus(owner, ownerStatuses)}
                       />
                     ))}
                   </>
@@ -222,13 +276,66 @@ function Tr({
           {formatNumber(owner.names.length)}
         </span>
       </td>
-      <td className="px-4 py-3 flex items-center justify-end">
-        {isStatusLoading && <LoaderCircle className="animate-spin" />}
-        {isStatusError && <TriangleAlert color="red" />}
-        {status === true && <CheckCircle color="green" />}
-        {status === false && <X color="red" />}
+      <td className="px-4 py-3 text-right align-top">
+        <StatusBadge
+          isError={isStatusError}
+          isLoading={isStatusLoading}
+          status={status}
+        />
       </td>
     </tr>
+  )
+}
+
+function StatusBadge({
+  isError,
+  isLoading,
+  status,
+}: {
+  isError: boolean
+  isLoading: boolean
+  status?: boolean
+}) {
+  if (isLoading) {
+    return (
+      <span className="inline-flex min-w-28 items-center justify-center gap-1.5 rounded-md border border-(--line) bg-(--surface-strong) px-2.5 py-1 text-xs font-bold text-(--sea-ink-soft)">
+        <LoaderCircle className="size-3.5 animate-spin" />
+        Checking
+      </span>
+    )
+  }
+
+  if (isError) {
+    return (
+      <span className="inline-flex min-w-28 items-center justify-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-bold text-red-700">
+        <TriangleAlert className="size-3.5" />
+        Error
+      </span>
+    )
+  }
+
+  if (status === true) {
+    return (
+      <span className="inline-flex min-w-28 items-center justify-center gap-1.5 rounded-md border border-green-200 bg-green-50 px-2.5 py-1 text-xs font-bold text-green-700">
+        <CheckCircle className="size-3.5" />
+        Registered
+      </span>
+    )
+  }
+
+  if (status === false) {
+    return (
+      <span className="inline-flex min-w-28 items-center justify-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-bold text-red-700">
+        <X className="size-3.5" />
+        Missing
+      </span>
+    )
+  }
+
+  return (
+    <span className="inline-flex min-w-28 items-center justify-center rounded-md border border-(--line) bg-(--surface-strong) px-2.5 py-1 text-xs font-bold text-(--sea-ink-soft)">
+      Unknown
+    </span>
   )
 }
 
@@ -244,8 +351,8 @@ function OwnerTableSkeleton() {
       <td className="px-4 py-3 align-top">
         <div className="h-7 w-16 animate-pulse rounded-sm border border-(--chip-line) bg-(--line)" />
       </td>
-      <td className="flex items-center justify-end px-4 py-3">
-        <div className="size-5 animate-pulse rounded-full bg-(--line)" />
+      <td className="px-4 py-3 text-right align-top">
+        <div className="ml-auto size-5 animate-pulse rounded-full bg-(--line)" />
       </td>
     </tr>
   ))
@@ -253,4 +360,21 @@ function OwnerTableSkeleton() {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat('en').format(value)
+}
+
+function getOwnerStatus(
+  owner: Owner,
+  ownerStatuses: Partial<Record<string, boolean>>,
+) {
+  return ownerStatuses[owner.address] ?? owner.status ?? false
+}
+
+function chunkAddresses(addresses: Array<string>, chunkSize: number) {
+  const chunks: Array<Array<string>> = []
+
+  for (let index = 0; index < addresses.length; index += chunkSize) {
+    chunks.push(addresses.slice(index, index + chunkSize))
+  }
+
+  return chunks
 }

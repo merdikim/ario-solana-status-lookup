@@ -6,6 +6,7 @@ export type Tag = {
 export type Owner = {
   address: string
   names: Array<string>
+  status?: boolean
 }
 
 type TransactionEdge = {
